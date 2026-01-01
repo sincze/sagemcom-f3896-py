@@ -5,7 +5,7 @@ import ssl
 
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import AsyncGenerator, Dict, List, Literal, Optional
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
 
 import aiohttp
 
