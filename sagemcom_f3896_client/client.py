@@ -69,15 +69,42 @@ class SagemcomModemSessionClient:
             "Origin": self.base_url,
         }
 
+#    async def _login(self) -> None:
+#        payload = {"password": self.password}
+#        try:
+#            async with self.__session.post("/rest/v1/user/login", json=payload) as res:
+#                assert res.status in (200, 201, 204), f"Login failed with {res.status}"
+#                body = await res.json()
+#                self.authorization = UserAuthorisationResult.build(body)
+#        except Exception as e:
+#            raise LoginFailedException(f"Failed to login to modem at {self.base_url}") from e
+
     async def _login(self) -> None:
+        # DEBUG: See what password is being sent (Careful: this shows in logs!)
+        LOG.debug("Attempting login at %s with password length: %s", self.base_url, len(self.password))
+        
         payload = {"password": self.password}
         try:
-            async with self.__session.post("/rest/v1/user/login", json=payload) as res:
+              # We use the base_url we know works and strip any trailing slashes
+            target_url = f"{self.base_url.rstrip('/')}/rest/v1/user/login"
+            async with self.__session.post(target_url, json=payload) as res:
+#            async with self.__session.post("/rest/v1/user/login", json=payload) as res:
+                # DEBUG: See the exact HTTP status code from the modem
+                LOG.debug("Modem login response status: %s", res.status)
+                
+                if res.status != 200:
+                    body_text = await res.text()
+                    LOG.debug("Modem error body: %s", body_text)
+
                 assert res.status in (200, 201, 204), f"Login failed with {res.status}"
                 body = await res.json()
                 self.authorization = UserAuthorisationResult.build(body)
+                LOG.debug("Login successful, token acquired.")
         except Exception as e:
+            # DEBUG: More descriptive error
+            LOG.error("Login CRASHED. URL: %s, Error: %s", self.base_url, str(e))
             raise LoginFailedException(f"Failed to login to modem at {self.base_url}") from e
+
 
     async def user_tokens(self, user_id, password) -> UserTokenResult:
         async with self.__request("POST", f"/rest/v1/user/{user_id}/tokens", {"password": password}, disable_auth=True) as res:
