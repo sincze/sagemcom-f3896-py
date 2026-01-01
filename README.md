@@ -1,6 +1,6 @@
 # Sagemcom F3896 client
 
-A client for the Sagemcom F3896 modem.
+A client for the Sagemcom F3896 modem. (Works with ZIGGO Modems that now require HTTPS)
 
 Main goal of @ties is to have metrics from the modem, but the general structure should allow this libary to be used to add other features.
 
