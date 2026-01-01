@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import time
+import ssl
+
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import AsyncGenerator, Dict, List, Literal, Optional
@@ -48,24 +50,33 @@ for endpoint in UNAUTHORIZED_ENDPOINTS:
 def requires_auth(path: str) -> bool:
     return path not in UNAUTHORIZED_ENDPOINTS
 
-
 class SagemcomModemSessionClient:
     __session: aiohttp.ClientSession
     base_url: str
     password: str
-    authorization: Optional[UserAuthorisationResult] = None
+    authorization: Optional[Any] = None
 
     __login_semaphore = asyncio.Semaphore(1)
 
-    def __init__(
-        self, session: aiohttp.ClientSession, base_url: str, password: str
-    ) -> None:
-        assert session
-        self.__session = session
-
+    def __init__(self, base_url: str, password: str, timeout: int = 10) -> None:
+        """
+        Initialize the client, ignoring self-signed SSL certificates.
+        """
         self.base_url = base_url
         self.password = password
 
+        # Create an SSL context that ignores self-signed certificates
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+        # Create aiohttp session with SSL bypass
+        self.__session = aiohttp.ClientSession(
+            base_url=self.base_url,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+            connector=aiohttp.TCPConnector(ssl=ssl_ctx),
+        )
+        
     def __headers(self) -> Dict[str, str]:
         return {
             "Accept": "*/*",
@@ -73,19 +84,27 @@ class SagemcomModemSessionClient:
             "Origin": self.base_url,
         }
 
-    async def _login(self) -> Dict[str, str]:
-        try:
-            async with self.__request(
-                "POST", "/rest/v1/user/login", {"password": self.password}
-            ) as res:
-                assert res.status == 201
+    async def _login(self) -> None:
+        """
+        Log in to the modem API, accept modern firmware status codes,
+        and store the authorization token.
+        """
+        payload = {"password": self.password}
 
+        try:
+            async with self.__session.post("/rest/v1/user/login", json=payload) as res:
+                # Accept multiple firmware status codes
+                assert res.status in (200, 201, 204), f"Login failed with {res.status}"
+
+                # Parse JSON response and store authorization
                 body = await res.json()
                 self.authorization = UserAuthorisationResult.build(body)
+
         except aiohttp.ClientResponseError as e:
             raise LoginFailedException(
-                "Failed to login to modem at %s" % self.base_url
+                f"Failed to login to modem at {self.base_url}"
             ) from e
+
 
     async def user_tokens(self, user_id, password) -> UserTokenResult:
         async with self.__request(
