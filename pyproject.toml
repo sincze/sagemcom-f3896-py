@@ -1,19 +1,20 @@
 [tool.poetry]
 name = "sagemcom-f3896-client"
-version = "0.6.1"
-description = ""
+version = "0.6.2"
+description = "Sagemcom F3896 exporter"
 authors = ["Ties de Kock <ties@tiesdekock.nl>"]
 readme = "README.md"
-
-[project.scripts]
-f3896-cli = "sagemcom_f3896_client.cli:cli"
+# This ensures poetry finds your code even if it's in the root or a src folder
+packages = [{include = "sagemcom_f3896_client"}]
 
 [tool.poetry.dependencies]
-click = "^8.1.7"
 python = "^3.10"
+click = "^8.1.7"
 aiohttp = "^3.9.4"
 prometheus-async = {extras = ["aiohttp"], version = "^22.2.0" }
 
+[tool.poetry.scripts]
+f3896-cli = "sagemcom_f3896_client.cli:cli"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7.1"
@@ -28,7 +29,7 @@ pytest-xdist = "^3.6.1"
 ruff = "^0.3.7"
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.black]
@@ -36,7 +37,7 @@ target-version = ["py310"]
 include = '\.pyi?$'
 extend-exclude = '''
 /(
-  | \.mypy_cache
+    \.mypy_cache
   | \.tox
   | \.venv
   | build
@@ -45,18 +46,16 @@ extend-exclude = '''
 '''
 
 [tool.isort]
+profile = "black"
 multi_line_output = 3
 include_trailing_comma = true
 force_grid_wrap = 0
 use_parentheses = true
 line_length = 88
-profile = "black"
 
 [tool.ruff]
-ignore = ["E501"]
+line-length = 88
+lint.ignore = ["E501"]
 
-[tool.pytest]
+[tool.pytest.ini_options]
 junit_family = "xunit2"
-
-[settings]
-# known_third_party = []
