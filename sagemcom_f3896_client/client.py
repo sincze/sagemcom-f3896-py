@@ -2,7 +2,6 @@ import asyncio
 import logging
 import time
 import ssl
-
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
@@ -10,7 +9,6 @@ from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
 import aiohttp
 
 from sagemcom_f3896_client.exception import LoginFailedException
-
 from .models import (
     EventLogItem,
     ModemATDMAUpstreamChannelResult,
@@ -26,7 +24,6 @@ from .models import (
 )
 
 LOG = logging.getLogger(__name__)
-
 
 UNAUTHORIZED_ENDPOINTS = set(
     [
@@ -46,7 +43,6 @@ UNAUTHORIZED_ENDPOINTS = set(
 for endpoint in UNAUTHORIZED_ENDPOINTS:
     assert not endpoint.startswith("/"), "URLs should be relative"
 
-
 def requires_auth(path: str) -> bool:
     return path not in UNAUTHORIZED_ENDPOINTS
 
@@ -58,25 +54,14 @@ class SagemcomModemSessionClient:
 
     __login_semaphore = asyncio.Semaphore(1)
 
-    def __init__(self, base_url: str, password: str, timeout: int = 10) -> None:
+    def __init__(self, session: aiohttp.ClientSession, base_url: str, password: str) -> None:
         """
-        Initialize the client, ignoring self-signed SSL certificates.
+        Initialize the session client.
         """
+        self.__session = session
         self.base_url = base_url
         self.password = password
 
-        # Create an SSL context that ignores self-signed certificates
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-
-        # Create aiohttp session with SSL bypass
-        self.__session = aiohttp.ClientSession(
-            base_url=self.base_url,
-            timeout=aiohttp.ClientTimeout(total=timeout),
-            connector=aiohttp.TCPConnector(ssl=ssl_ctx),
-        )
-        
     def __headers(self) -> Dict[str, str]:
         return {
             "Accept": "*/*",
@@ -85,69 +70,35 @@ class SagemcomModemSessionClient:
         }
 
     async def _login(self) -> None:
-        """
-        Log in to the modem API, accept modern firmware status codes,
-        and store the authorization token.
-        """
         payload = {"password": self.password}
-
         try:
             async with self.__session.post("/rest/v1/user/login", json=payload) as res:
-                # Accept multiple firmware status codes
                 assert res.status in (200, 201, 204), f"Login failed with {res.status}"
-
-                # Parse JSON response and store authorization
                 body = await res.json()
                 self.authorization = UserAuthorisationResult.build(body)
-
-        except aiohttp.ClientResponseError as e:
-            raise LoginFailedException(
-                f"Failed to login to modem at {self.base_url}"
-            ) from e
-
+        except Exception as e:
+            raise LoginFailedException(f"Failed to login to modem at {self.base_url}") from e
 
     async def user_tokens(self, user_id, password) -> UserTokenResult:
-        async with self.__request(
-            "POST",
-            f"/rest/v1/user/{user_id}/tokens",
-            {"password": password},
-            disable_auth=True,
-        ) as res:
+        async with self.__request("POST", f"/rest/v1/user/{user_id}/tokens", {"password": password}, disable_auth=True) as res:
             assert res.status == 201
             result = UserTokenResult.build(await res.json())
-            # Update the token we use iff it got replaced
             if self.authorization and self.authorization.user_id == user_id:
                 self.authorization.token = result.token
-
             return result
 
     async def delete_token(self, user_id, token) -> None:
-        async with self.__request(
-            "DELETE", f"/rest/v1/user/{user_id}/token/{token}"
-        ) as res:
+        async with self.__request("DELETE", f"/rest/v1/user/{user_id}/token/{token}") as res:
             assert res.status == 204
 
     async def _logout(self) -> None:
         async with self.__login_semaphore:
             if self.authorization:
-                # Try to log out. However, the session may not always exist.
-                # for example, the modem could have been rebooted while a session was active.
                 try:
-                    LOG.debug(
-                        "Logging out session userId=%d", self.authorization.user_id
-                    )
-                    await self.delete_token(
-                        self.authorization.user_id, self.authorization.token
-                    )
-                except (
-                    aiohttp.ClientResponseError,
-                    aiohttp.client_exceptions.ClientConnectorError,
-                    asyncio.TimeoutError,
-                ):
-                    LOG.info(
-                        "Failure during logout request, still deleting session token.",
-                        exc_info=True,
-                    )
+                    LOG.debug("Logging out session userId=%d", self.authorization.user_id)
+                    await self.delete_token(self.authorization.user_id, self.authorization.token)
+                except Exception:
+                    LOG.info("Failure during logout request, still deleting session token.", exc_info=True)
                 finally:
                     self.authorization = None
 
@@ -161,18 +112,14 @@ class SagemcomModemSessionClient:
         disable_auth: bool = False,
     ) -> AsyncGenerator[aiohttp.ClientResponse, None]:
         path = path[1:] if path.startswith("/") else path
-        url = f"{self.base_url if not self.base_url.endswith('/') else self.base_url[:-1]}/{path}"
+        url = f"{self.base_url.rstrip('/')}/{path}"
 
         headers = self.__headers()
         if not disable_auth and requires_auth(path):
-            # log in because this endpoint requires authentication
             if not self.authorization:
                 async with self.__login_semaphore:
-                    # re-check since parallel thread that was also waiting may have logged in
                     if not self.authorization:
-                        LOG.debug(
-                            "logging in because '%s' requires authentication", path
-                        )
+                        LOG.debug("logging in because '%s' requires authentication", path)
                         await self._login()
             headers["Authorization"] = f"Bearer {self.authorization.token}"
 
@@ -180,22 +127,10 @@ class SagemcomModemSessionClient:
             headers["Content-Type"] = "application/json"
 
         t0 = time.time()
-
         async with self.__session.request(
-            method,
-            url,
-            headers=headers,
-            json=json,
-            raise_for_status=raise_for_status,
+            method, url, headers=headers, json=json, raise_for_status=raise_for_status
         ) as resp:
-            LOG.debug(
-                "%s %s %s %.3f %s",
-                method,
-                url,
-                resp.status,
-                time.time() - t0,
-                resp.reason,
-            )
+            LOG.debug("%s %s %s %.3f %s", method, url, resp.status, time.time() - t0, resp.reason)
             yield resp
 
     async def echo(self, body: object) -> object:
@@ -205,9 +140,7 @@ class SagemcomModemSessionClient:
     async def modem_event_log(self) -> List[EventLogItem]:
         async with self.__request("GET", "/rest/v1/cablemodem/eventlog") as resp:
             res = await resp.json()
-            return sorted(
-                (EventLogItem.build(e) for e in res["eventlog"]), reverse=True
-            )
+            return sorted((EventLogItem.build(e) for e in res["eventlog"]), reverse=True)
 
     async def modem_service_flows(self) -> List[ModemServiceFlowResult]:
         async with self.__request("GET", "/rest/v1/cablemodem/serviceflows") as resp:
@@ -219,9 +152,7 @@ class SagemcomModemSessionClient:
             return SystemInfoResult.build(await resp.json())
 
     async def modem_primary_downstream(self) -> ModemQAMDownstreamChannelResult:
-        async with self.__request(
-            "GET", "/rest/v1/cablemodem/downstream/primary_"
-        ) as resp:
+        async with self.__request("GET", "/rest/v1/cablemodem/downstream/primary_") as resp:
             data = await resp.json()
             return ModemQAMDownstreamChannelResult.build(data["channel"])
 
@@ -230,54 +161,37 @@ class SagemcomModemSessionClient:
             return ModemStateResult.build(await resp.json())
 
     async def system_reboot(self) -> bool:
-        async with self.__request(
-            "POST", "/rest/v1/system/reboot", json={"reboot": {"enable": True}}
-        ) as resp:
+        async with self.__request("POST", "/rest/v1/system/reboot", json={"reboot": {"enable": True}}) as resp:
             body = await resp.json()
             if "accepted" in body:
-                # We are now no longer logged in after the reboot
                 self.authorization = None
                 return True
             return False
 
-    async def modem_downstreams(
-        self,
-    ) -> List[ModemQAMDownstreamChannelResult | ModemOFDMDownstreamChannelResult]:
+    async def modem_downstreams(self) -> List[ModemQAMDownstreamChannelResult | ModemOFDMDownstreamChannelResult]:
         async with self.__request("GET", "/rest/v1/cablemodem/downstream") as resp:
             return [
-                (
-                    ModemQAMDownstreamChannelResult.build(e)
-                    if e["channelType"] == "sc_qam"
-                    else ModemOFDMDownstreamChannelResult.build(e)
-                )
+                ModemQAMDownstreamChannelResult.build(e) if e["channelType"] == "sc_qam"
+                else ModemOFDMDownstreamChannelResult.build(e)
                 for e in (await resp.json())["downstream"]["channels"]
             ]
 
-    async def modem_upstreams(
-        self,
-    ) -> List[ModemATDMAUpstreamChannelResult | ModemOFDMAUpstreamChannelResult]:
+    async def modem_upstreams(self) -> List[ModemATDMAUpstreamChannelResult | ModemOFDMAUpstreamChannelResult]:
         async with self.__request("GET", "/rest/v1/cablemodem/upstream") as resp:
             return [
-                (
-                    ModemATDMAUpstreamChannelResult.build(e)
-                    if e["channelType"] == "atdma"
-                    else ModemOFDMAUpstreamChannelResult.build(e)
-                )
+                ModemATDMAUpstreamChannelResult.build(e) if e["channelType"] == "atdma"
+                else ModemOFDMAUpstreamChannelResult.build(e)
                 for e in (await resp.json())["upstream"]["channels"]
             ]
 
     async def system_provisioning(self) -> SystemProvisioningResponse:
-        async with self.__request(
-            "GET", "/rest/v1/system/gateway/provisioning"
-        ) as resp:
+        async with self.__request("GET", "/rest/v1/system/gateway/provisioning") as resp:
             return SystemProvisioningResponse.build(await resp.json())
-
 
 class SagemcomModemClient:
     base_url: str
     password: str
     timeout: int
-
     session: ContextVar[aiohttp.ClientSession] = ContextVar("session")
     client: ContextVar[SagemcomModemSessionClient] = ContextVar("client")
 
@@ -287,23 +201,27 @@ class SagemcomModemClient:
         self.timeout = timeout
 
     async def __aenter__(self) -> SagemcomModemSessionClient:
-        timeout = aiohttp.ClientTimeout(total=self.timeout)
-        conn = aiohttp.TCPConnector(limit_per_host=30, force_close=True)
+        # Create SSL context to bypass self-signed certificate verification
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
 
-        self.session.set(aiohttp.ClientSession(timeout=timeout, connector=conn))
-        self.client.set(
-            SagemcomModemSessionClient(self.session.get(), self.base_url, self.password)
-        )
-        return self.client.get()
+        timeout_cfg = aiohttp.ClientTimeout(total=self.timeout)
+        conn = aiohttp.TCPConnector(limit_per_host=30, force_close=True, ssl=ssl_ctx)
+
+        new_session = aiohttp.ClientSession(timeout=timeout_cfg, connector=conn)
+        self.session.set(new_session)
+        
+        new_client = SagemcomModemSessionClient(new_session, self.base_url, self.password)
+        self.client.set(new_client)
+        return new_client
 
     async def __aexit__(self, *args) -> None:
         try:
-            await self.client.get()._logout()
-        except (
-            aiohttp.ClientResponseError,
-            aiohttp.client_exceptions.ClientConnectorError,
-            asyncio.TimeoutError,
-        ):
-            LOG.debug("HTTP error during logout", exc_info=True)
-
-        await self.session.get().close()
+            client_inst = self.client.get()
+            await client_inst._logout()
+        except Exception:
+            LOG.debug("Error during logout", exc_info=True)
+        finally:
+            session_inst = self.session.get()
+            await session_inst.close()
