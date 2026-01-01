@@ -1,3 +1,5 @@
+[![ko-fi](https://www.ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/sincze)
+
 # Sagemcom F3896 client
 
 A client for the Sagemcom F3896 modem. (Works with ZIGGO Modems that now require HTTPS)
